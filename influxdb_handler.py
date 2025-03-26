@@ -18,26 +18,27 @@ class InfluxDBHandler:
         self.bucket = os.getenv("INFLUXDB_BUCKET")
         self.write_api = self.client.write_api(write_options=SYNCHRONOUS)
 
-    def store_sensor_data(self, data: Dict[str, Any]) -> bool:
+    def store_sensor_data(self, *, device_id: str, device_type: str, sensor_data: List[Dict[str, Any]]) -> bool:
         """Store sensor data in InfluxDB"""
         try:
-            # Create a point with the sensor data
-            point = Point("sensor_data") \
-                .tag("device_id", data["device_id"]) \
-                .tag("device_type", data["device_type"]) \
-                .time(data["timestamp"])
-            
-            # Add all fields from the sensor data
-            for key, value in data.items():
-                if key not in ["device_id", "device_type", "timestamp"]:
-                    point.field(key, value)
-            
-            # Write the point to InfluxDB
-            self.client.write_api(write_options=SYNCHRONOUS).write(
-                bucket=self.bucket,
-                org=self.org,
-                record=point
-            )
+            for data_point in sensor_data:
+                # Create a point with the sensor data
+                point = Point("sensor_data") \
+                    .tag("device_id", device_id) \
+                    .tag("device_type", device_type) \
+                    .time(data_point["timestamp"])
+                
+                # Add all fields from the sensor data
+                for key, value in data_point.items():
+                    if key != "timestamp":
+                        point.field(key, value)
+                
+                # Write the point to InfluxDB
+                self.write_api.write(
+                    bucket=self.bucket,
+                    org=os.getenv("INFLUXDB_ORG"),
+                    record=point
+                )
             return True
         except Exception as e:
             print(f"Error storing sensor data: {str(e)}")

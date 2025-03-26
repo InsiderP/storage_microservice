@@ -35,12 +35,16 @@ async def generate_and_store_data(num_devices: int = 5):
         # Store data in each database
         for device in dataset["devices"]:
             device_id = device["device_id"]
+            device_type = device["device_type"]
+            
+            # Generate time series data for InfluxDB
+            sensor_data = data_generator.generate_time_series_data(device_id, device_type, hours=24)
             
             # Store sensor data in InfluxDB
             influx_handler.store_sensor_data(
                 device_id=device_id,
-                device_type=device["device_type"],
-                sensor_data=device["sensor_data"]
+                device_type=device_type,
+                sensor_data=sensor_data
             )
             
             # Store metadata in PostgreSQL
