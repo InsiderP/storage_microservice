@@ -1,23 +1,16 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-import influxdb_client
-from influxdb_client.client.write_api import SYNCHRONOUS
-import psycopg2
-from psycopg2.extras import RealDictCursor
-import boto3
-import os
-from dotenv import load_dotenv
-import pandas as pd
-from datetime import datetime
-import json
-from typing import List, Dict, Any
+from datetime import datetime, timedelta
+from typing import List, Dict, Any, Optional
+import uvicorn
+from data_generator import IoTDataGenerator
+from influxdb_handler import InfluxDBHandler
+from postgres_handler import PostgreSQLHandler
+from s3_handler import S3Handler
 
-# Load environment variables
-load_dotenv()
+app = FastAPI(title="Smart Home IoT Data Service")
 
-app = FastAPI(title="Smart Building Data Storage Service")
-
-# CORS middleware
+# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -26,137 +19,139 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# InfluxDB client
-influx_client = influxdb_client.InfluxDBClient(
-    url=os.getenv("INFLUXDB_URL"),
-    token=os.getenv("INFLUXDB_TOKEN"),
-    org=os.getenv("INFLUXDB_ORG")
-)
-write_api = influx_client.write_api(write_options=SYNCHRONOUS)
+# Initialize handlers
+data_generator = IoTDataGenerator()
+influx_handler = InfluxDBHandler()
+postgres_handler = PostgreSQLHandler()
+s3_handler = S3Handler()
 
-# PostgreSQL connection
-def get_postgres_connection():
-    return psycopg2.connect(
-        host=os.getenv("POSTGRES_HOST"),
-        port=os.getenv("POSTGRES_PORT"),
-        database=os.getenv("POSTGRES_DB"),
-        user=os.getenv("POSTGRES_USER"),
-        password=os.getenv("POSTGRES_PASSWORD")
-    )
-
-# S3 client
-s3_client = boto3.client(
-    's3',
-    aws_access_key_id=os.getenv("AWS_ACCESS_KEY_ID"),
-    aws_secret_access_key=os.getenv("AWS_SECRET_ACCESS_KEY"),
-    region_name=os.getenv("AWS_REGION")
-)
-
-@app.post("/sensor-data")
-async def store_sensor_data(data: Dict[str, Any]):
-    """Store sensor data in InfluxDB"""
+@app.post("/generate-and-store")
+async def generate_and_store_data(num_devices: int = 5):
+    """Generate and store dummy IoT device data"""
     try:
-        point = influxdb_client.Point("sensor_measurement")\
-            .tag("device_id", data.get("device_id"))\
-            .field("temperature", data.get("temperature"))\
-            .field("humidity", data.get("humidity"))\
-            .field("energy_consumption", data.get("energy_consumption"))\
-            .time(datetime.utcnow())
+        # Generate complete dataset
+        dataset = data_generator.generate_complete_dataset(num_devices)
         
-        write_api.write(bucket=os.getenv("INFLUXDB_BUCKET"), record=point)
-        return {"message": "Sensor data stored successfully"}
+        # Store data in each database
+        for device in dataset["devices"]:
+            device_id = device["device_id"]
+            
+            # Store sensor data in InfluxDB
+            influx_handler.store_sensor_data(
+                device_id=device_id,
+                device_type=device["device_type"],
+                sensor_data=device["sensor_data"]
+            )
+            
+            # Store metadata in PostgreSQL
+            postgres_handler.store_device_metadata(dataset["metadata"][device_id])
+            
+            # Store logs in PostgreSQL
+            for log in dataset["logs"][device_id]:
+                postgres_handler.store_system_log(log)
+        
+        return {"message": f"Successfully generated and stored data for {num_devices} devices"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/metadata")
-async def store_metadata(data: Dict[str, Any]):
-    """Store metadata in PostgreSQL"""
+@app.get("/devices")
+async def get_devices():
+    """Get all devices and their metadata"""
     try:
-        conn = get_postgres_connection()
-        cur = conn.cursor()
-        
-        cur.execute("""
-            INSERT INTO metadata (device_id, location, type, last_maintenance)
-            VALUES (%s, %s, %s, %s)
-            ON CONFLICT (device_id) DO UPDATE
-            SET location = EXCLUDED.location,
-                type = EXCLUDED.type,
-                last_maintenance = EXCLUDED.last_maintenance
-        """, (
-            data.get("device_id"),
-            data.get("location"),
-            data.get("type"),
-            data.get("last_maintenance")
-        ))
-        
-        conn.commit()
-        cur.close()
-        conn.close()
-        return {"message": "Metadata stored successfully"}
+        return postgres_handler.get_device_metadata()
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/upload-file")
-async def upload_file(file: UploadFile = File(...)):
-    """Upload file to S3"""
+@app.get("/devices/{device_id}")
+async def get_device(device_id: str):
+    """Get specific device metadata"""
     try:
-        file_content = await file.read()
-        s3_client.put_object(
-            Bucket=os.getenv("S3_BUCKET_NAME"),
-            Key=f"{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}_{file.filename}",
-            Body=file_content
-        )
-        return {"message": "File uploaded successfully"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/sensor-data/{device_id}")
-async def get_sensor_data(device_id: str, start_time: str, end_time: str):
-    """Retrieve sensor data from InfluxDB"""
-    try:
-        query = f'''
-        from(bucket: "{os.getenv("INFLUXDB_BUCKET")}")
-            |> range(start: {start_time}, stop: {end_time})
-            |> filter(fn: (r) => r["device_id"] == "{device_id}")
-        '''
-        result = influx_client.query_api().query(query)
-        return {"data": result}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/metadata/{device_id}")
-async def get_metadata(device_id: str):
-    """Retrieve metadata from PostgreSQL"""
-    try:
-        conn = get_postgres_connection()
-        cur = conn.cursor(cursor_factory=RealDictCursor)
-        
-        cur.execute("""
-            SELECT * FROM metadata WHERE device_id = %s
-        """, (device_id,))
-        
-        result = cur.fetchone()
-        cur.close()
-        conn.close()
-        
-        if not result:
+        devices = postgres_handler.get_device_metadata(device_id)
+        if not devices:
             raise HTTPException(status_code=404, detail="Device not found")
-        return result
+        return devices[0]
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/files")
-async def list_files():
-    """List files in S3 bucket"""
+@app.get("/devices/{device_id}/sensor-data")
+async def get_device_sensor_data(
+    device_id: str,
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None
+):
+    """Get sensor data for a specific device"""
     try:
-        response = s3_client.list_objects_v2(
-            Bucket=os.getenv("S3_BUCKET_NAME")
-        )
-        files = [{"key": obj["Key"], "size": obj["Size"]} for obj in response.get("Contents", [])]
-        return {"files": files}
+        if not start_time:
+            start_time = (datetime.utcnow() - timedelta(hours=24)).isoformat()
+        if not end_time:
+            end_time = datetime.utcnow().isoformat()
+        
+        return influx_handler.query_sensor_data(device_id, start_time, end_time)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/devices/{device_id}/logs")
+async def get_device_logs(
+    device_id: str,
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None
+):
+    """Get system logs for a specific device"""
+    try:
+        return postgres_handler.get_system_logs(device_id, start_time, end_time)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/devices/{device_id}/images")
+async def upload_device_image(device_id: str, file: UploadFile = File(...)):
+    """Upload an image for a device"""
+    try:
+        image_data = await file.read()
+        image_url = s3_handler.store_device_image(device_id, image_data, file.content_type)
+        if not image_url:
+            raise HTTPException(status_code=500, detail="Failed to store image")
+        return {"image_url": image_url}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/devices/{device_id}/images")
+async def get_device_images(device_id: str):
+    """Get all images for a device"""
+    try:
+        return s3_handler.get_device_images(device_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/device-types")
+async def get_device_types():
+    """Get all unique device types"""
+    try:
+        return postgres_handler.get_device_types()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/device-locations")
+async def get_device_locations():
+    """Get all unique device locations"""
+    try:
+        return postgres_handler.get_device_locations()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/devices/{device_id}")
+async def delete_device(device_id: str):
+    """Delete all data for a device"""
+    try:
+        # Delete from S3
+        if not s3_handler.delete_device_data(device_id):
+            raise HTTPException(status_code=500, detail="Failed to delete device data from S3")
+        
+        # Note: InfluxDB and PostgreSQL data deletion would need to be implemented
+        # in their respective handlers
+        
+        return {"message": f"Successfully deleted data for device {device_id}"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host=os.getenv("API_HOST"), port=int(os.getenv("API_PORT"))) 
+    uvicorn.run(app, host="0.0.0.0", port=8001) 

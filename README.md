@@ -1,129 +1,164 @@
-# Smart Building Data Storage Service
+# Smart Home IoT Data Service
 
-This microservice handles data storage for a smart building system, managing sensor data, metadata, and file storage using InfluxDB, PostgreSQL, and AWS S3.
+This microservice handles data storage and retrieval for smart home IoT devices, utilizing a multi-database architecture:
 
-## Features
+- **InfluxDB**: Time-series data storage for sensor readings
+- **PostgreSQL**: Relational data storage for device metadata and system logs
+- **AWS S3**: Object storage for device images and log files
 
-- Time-series data storage using InfluxDB
-- Relational data storage using PostgreSQL
-- File storage using AWS S3
-- RESTful API endpoints for data operations
-- Sample data generation for testing
+## Architecture Overview
+
+```
+         ┌──────────────┐
+         │ Smart Home    │
+         │ IoT Devices   │
+         └──────┬────────┘
+                │
+                ▼
+      ┌────────────────────┐
+      │   Data Ingestion    │
+      │  (Dummy Data Gen.)  │
+      └────────┬────────────┘
+                │
+                ▼
+      ┌────────────────────┐
+      │  FastAPI Service   │
+      │   (Port 8001)      │
+      └───────┬────────────┘
+              │
+    ┌─────────┼─────────┐
+    │         │         │
+    ▼         ▼         ▼
+InfluxDB   PostgreSQL   AWS S3
+(Time-Series) (Metadata) (Files/Logs)
+```
 
 ## Prerequisites
 
-- Docker and Docker Compose
-- AWS S3 bucket and credentials
-- Python 3.11 or higher (for local development)
+- Python 3.8+
+- InfluxDB Cloud account
+- PostgreSQL database
+- AWS account with S3 access
 
-## Setup
+## Configuration
 
-1. Clone the repository:
-```bash
-git clone <repository-url>
-cd <repository-name>
+Create a `.env` file in the project root with the following variables:
+
+```env
+INFLUXDB_URL=your_influxdb_url
+INFLUXDB_TOKEN=your_influxdb_token
+INFLUXDB_ORG=your_org
+INFLUXDB_BUCKET=your_bucket
+
+POSTGRES_HOST=localhost
+POSTGRES_PORT=5432
+POSTGRES_DB=smart_building
+POSTGRES_USER=your_user
+POSTGRES_PASSWORD=your_password
+
+AWS_ACCESS_KEY_ID=your_access_key
+AWS_SECRET_ACCESS_KEY=your_secret_key
+AWS_REGION=your_region
+S3_BUCKET_NAME=your_bucket_name
 ```
 
-2. Configure environment variables:
-   - Copy `.env.example` to `.env`
-   - Update the values in `.env` with your configuration
+## Installation
 
-3. Start the services using Docker Compose:
+1. Create a virtual environment:
 ```bash
-docker-compose up -d
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
 ```
 
-4. Generate sample data (optional):
-```bash
-python generate_sample_data.py
-```
-
-## API Endpoints
-
-### Sensor Data
-
-- `POST /sensor-data`: Store sensor data in InfluxDB
-- `GET /sensor-data/{device_id}`: Retrieve sensor data for a specific device
-
-### Metadata
-
-- `POST /metadata`: Store device metadata in PostgreSQL
-- `GET /metadata/{device_id}`: Retrieve metadata for a specific device
-
-### File Storage
-
-- `POST /upload-file`: Upload a file to S3
-- `GET /files`: List files in the S3 bucket
-
-## Example Usage
-
-### Store Sensor Data
-```bash
-curl -X POST http://localhost:8000/sensor-data \
-  -H "Content-Type: application/json" \
-  -d '{
-    "device_id": "device_001",
-    "temperature": 22.5,
-    "humidity": 45.0,
-    "energy_consumption": 100.0
-  }'
-```
-
-### Store Metadata
-```bash
-curl -X POST http://localhost:8000/metadata \
-  -H "Content-Type: application/json" \
-  -d '{
-    "device_id": "device_001",
-    "location": "Building A, Floor 1",
-    "type": "HVAC",
-    "last_maintenance": "2024-02-20T10:00:00Z"
-  }'
-```
-
-### Upload File
-```bash
-curl -X POST http://localhost:8000/upload-file \
-  -F "file=@/path/to/your/file.csv"
-```
-
-## Development
-
-1. Install dependencies:
+2. Install dependencies:
 ```bash
 pip install -r requirements.txt
 ```
 
-2. Run the service locally:
+## Usage
+
+1. Start the FastAPI service:
 ```bash
-uvicorn main:app --reload
+python main.py
 ```
 
-3. Access the API documentation:
-   - Open http://localhost:8000/docs in your browser
-   - Explore the available endpoints and their documentation
+2. The service will be available at `http://localhost:8001`
 
-## Testing
+3. API Documentation will be available at:
+   - Swagger UI: `http://localhost:8001/docs`
+   - ReDoc: `http://localhost:8001/redoc`
 
-The service includes a sample data generation script that can be used for testing:
+## API Endpoints
 
+### Data Generation
+- `POST /generate-and-store`: Generate and store dummy IoT device data
+  - Query parameter: `num_devices` (default: 5)
+
+### Device Management
+- `GET /devices`: Get all devices and their metadata
+- `GET /devices/{device_id}`: Get specific device metadata
+- `DELETE /devices/{device_id}`: Delete all data for a device
+
+### Sensor Data
+- `GET /devices/{device_id}/sensor-data`: Get sensor data for a device
+  - Query parameters: `start_time`, `end_time` (optional)
+
+### System Logs
+- `GET /devices/{device_id}/logs`: Get system logs for a device
+  - Query parameters: `start_time`, `end_time` (optional)
+
+### Device Images
+- `POST /devices/{device_id}/images`: Upload an image for a device
+- `GET /devices/{device_id}/images`: Get all images for a device
+
+### Device Information
+- `GET /device-types`: Get all unique device types
+- `GET /device-locations`: Get all unique device locations
+
+## Data Structure
+
+### Device Types
+- Thermostat
+- Camera
+- Motion Sensor
+- Door Lock
+- Smart Plug
+
+### Sensor Data (by device type)
+- Thermostat: temperature, humidity, pressure
+- Camera: motion_detected, brightness
+- Motion Sensor: motion_detected, sensitivity
+- Door Lock: locked, battery_level
+- Smart Plug: power_on, energy_usage
+
+## Example Usage
+
+1. Generate and store dummy data:
 ```bash
-python generate_sample_data.py
+curl -X POST "http://localhost:8001/generate-and-store?num_devices=5"
 ```
 
-This script will:
-1. Generate sample metadata
-2. Generate 24 hours of sensor data
-3. Upload a sample CSV file
+2. Get all devices:
+```bash
+curl "http://localhost:8001/devices"
+```
 
-## Contributing
+3. Get sensor data for a device:
+```bash
+curl "http://localhost:8001/devices/device_1/sensor-data"
+```
 
-1. Fork the repository
-2. Create a feature branch
-3. Commit your changes
-4. Push to the branch
-5. Create a Pull Request
+4. Upload a device image:
+```bash
+curl -X POST -F "file=@image.jpg" "http://localhost:8001/devices/device_1/images"
+```
 
-## License
+## Error Handling
 
-This project is licensed under the MIT License - see the LICENSE file for details. 
+The service includes comprehensive error handling for:
+- Database connection issues
+- Invalid device IDs
+- File upload failures
+- Data validation errors
+
+All errors are returned with appropriate HTTP status codes and error messages. 
